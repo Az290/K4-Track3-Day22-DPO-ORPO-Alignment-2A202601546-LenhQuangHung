@@ -41,7 +41,7 @@ else:  # BIGGPU
     PER_DEVICE_BATCH = 2
     GRAD_ACCUM = 4
 
-SFT_DATASET = os.environ.get("SFT_DATASET", "5CD-AI/Vietnamese-alpaca-cleaned")
+SFT_DATASET = os.environ.get("SFT_DATASET", "5CD-AI/Vietnamese-alpaca-gpt4-gg-translated")
 SFT_SLICE = 1000
 NUM_EPOCHS = 1
 
@@ -106,7 +106,7 @@ print(f"Trainable params: {sum(p.numel() for p in model.parameters() if p.requir
 # %% [markdown]
 # ## 2. Load + format VN Alpaca slice
 #
-# `5CD-AI/Vietnamese-alpaca-cleaned` is a 50k-row VN Alpaca translation. Lab 21
+# `5CD-AI/Vietnamese-alpaca-gpt4-gg-translated` is a 52k-row VN Alpaca-GPT4 set (Google-translated, cot `instruction_vi` / `input_vi` / `output_vi`). Lab 21
 # uses 1k slice for the demo run; we match that exactly so reward gap is comparable.
 
 # %%
@@ -118,20 +118,46 @@ print(f"\nFirst row:\n{ds[0]}")
 
 # %%
 # Alpaca → ChatML format (Qwen2.5's native template)
+# Column-name resolution. Cac mirror VN Alpaca dung schema khac nhau:
+#   5CD-AI/Vietnamese-alpaca-gpt4-gg-translated -> instruction_vi / input_vi / output_vi (+ *_en)
+#   5CD-AI/Vietnamese-alpaca-cleaned            -> instruction / input / output
+# Uu tien cot _vi de train tren tieng Viet; fallback ve schema Alpaca chuan.
+def _pick(row, *names):
+    for n in names:
+        value = row.get(n)
+        if value:
+            return value
+    return ""
+
+
 def format_alpaca_to_chat(row):
+    instruction = _pick(row, "instruction_vi", "instruction")
+    extra_input = _pick(row, "input_vi", "input")
+    output = _pick(row, "output_vi", "output")
+
     messages = []
-    if row.get("instruction"):
-        prompt = row["instruction"]
-        if row.get("input"):
-            prompt += "\n\n" + row["input"]
+    if instruction:
+        prompt = instruction
+        if extra_input:
+            prompt += "\n\n" + extra_input
         messages.append({"role": "user", "content": prompt})
-    if row.get("output"):
-        messages.append({"role": "assistant", "content": row["output"]})
+    if output:
+        messages.append({"role": "assistant", "content": output})
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
     return {"text": text}
 
 
 ds_formatted = ds.map(format_alpaca_to_chat, remove_columns=ds.column_names)
+
+# Guard: neu ten cot khong khop, apply_chat_template van tra ve chuoi template rong
+# -> train ra rac ma khong bao loi. Bat o day thay vi 10 phut sau.
+n_empty = sum(1 for t in ds_formatted["text"] if len(t.strip()) < 32)
+assert n_empty < 0.1 * len(ds_formatted), (
+    f"{n_empty}/{len(ds_formatted)} rows formatted rong. "
+    f"Column names cua dataset: {ds.column_names}. "
+    f"Sua _pick(...) trong format_alpaca_to_chat cho khop schema."
+)
+print(f"Empty/degenerate rows: {n_empty}/{len(ds_formatted)}")
 print(f"\nSample formatted text (first 500 chars):\n{ds_formatted[0]['text'][:500]}")
 
 # %% [markdown]

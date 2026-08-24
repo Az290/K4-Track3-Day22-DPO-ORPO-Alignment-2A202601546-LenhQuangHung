@@ -80,6 +80,29 @@ def generate_with_adapter(adapter_path: Path, prompts: list[dict], max_new_token
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Qwen2.5 *base* (khong phai -Instruct) khong kem chat_template -> apply_chat_template()
+    # raise ValueError. Set ChatML (dinh dang native cua Qwen2.5) mot cach tuong minh.
+    if getattr(tokenizer, "chat_template", None) is None:
+        tokenizer.chat_template = (
+            r"{% for message in messages %}"
+            r"{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}"
+            r"{% endfor %}"
+            r"{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+        )
+        print("Set tokenizer.chat_template = ChatML (base model khong co san)")
+
+    # ChatML ket thuc luot bang <|im_end|>. Neu khong tro eos vao do, generate() se
+    # chay het max_new_tokens thay vi dung dung cho.
+    _im_end = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    if _im_end is not None and _im_end != tokenizer.unk_token_id:
+        tokenizer.eos_token = "<|im_end|>"
+        tokenizer.pad_token = tokenizer.eos_token
+        try:
+            model.generation_config.eos_token_id = _im_end
+            model.generation_config.pad_token_id = _im_end
+        except AttributeError:
+            pass
+
     model = PeftModel.from_pretrained(model, str(adapter_path))
     FastLanguageModel.for_inference(model)
 
